@@ -1,22 +1,21 @@
 extends Camera3D
-## Orbit camera with three view modes. Drag with the mouse (any button) or use
-## the arrow keys to orbit; the mouse wheel or +/- zooms within the mode.
+## Orbit camera with four view modes. The main script passes it mouse events
+## that are not aimed at the piece (see handle_input); arrow keys orbit too.
 
 enum Mode { OVERVIEW, START, FOLLOW, TUNNEL }
-const MODE_NAMES := ["Overview", "Start", "Follow piece", "Down the tunnel"]
+const MODE_NAMES := ["Overview", "Start", "Follow piece", "Through the start (45°)"]
 ## Distance from the target in each mode, as a multiple of the cube size.
-const MODE_DISTANCE := [2.3, 1.45, 0.95, 2.6]
-## Field of view per mode. The tunnel view uses a narrow lens from further
-## away, so the goal face doesn't shrink to a dot behind the start face.
-const MODE_FOV := [70.0, 70.0, 70.0, 35.0]
+const MODE_DISTANCE := [2.3, 1.45, 0.95, 1.6]
+## Field of view per mode.
+const MODE_FOV := [70.0, 70.0, 70.0, 50.0]
 
-var mode: int = Mode.START
+var mode: int = Mode.TUNNEL
 var yaw := deg_to_rad(35.0)
-var pitch := deg_to_rad(32.0)
+var pitch := deg_to_rad(45.0)
 var zoom := 1.0
 
 var cube_centre := Vector3.ZERO
-var cube_extent := 9.0
+var cube_extent := 24.0
 var start_point := Vector3.ZERO
 var follow_point := Vector3.ZERO
 ## Centre of the goal face, straight down the line from the start.
@@ -33,6 +32,7 @@ func setup(p_cube_centre: Vector3, p_cube_extent: float, p_start_point: Vector3,
 	cube_extent = p_cube_extent
 	start_point = p_start_point
 	follow_point = p_start_point
+	set_mode(mode)
 	snap_to_mode()
 
 
@@ -40,9 +40,8 @@ func set_mode(new_mode: int) -> void:
 	mode = new_mode
 	zoom = 1.0
 	if mode == Mode.TUNNEL:
-		# Look almost straight down from above the start towards the goal face.
-		pitch = deg_to_rad(87.0)
-		yaw = snappedf(yaw, PI / 2.0)  # square on to the cube
+		# Look through the start face at 45 degrees towards the goal face.
+		pitch = deg_to_rad(45.0)
 	elif pitch > deg_to_rad(70.0):
 		pitch = deg_to_rad(32.0)
 
@@ -68,7 +67,8 @@ func _desired_target() -> Vector3:
 		Mode.OVERVIEW:
 			return cube_centre
 		Mode.TUNNEL:
-			return goal_point
+			# The middle of the straight line from start to goal.
+			return start_point.lerp(goal_point, 0.5)
 		Mode.START:
 			# Look at the start, nudged towards the middle so the cube stays in view.
 			return start_point.lerp(cube_centre, 0.3)
@@ -102,7 +102,8 @@ func _process(delta: float) -> void:
 	_apply()
 
 
-func _unhandled_input(event: InputEvent) -> void:
+## Orbit with a mouse drag, zoom with the wheel or a trackpad pinch.
+func handle_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE:
@@ -121,9 +122,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		pitch += event.delta.y * 0.05
 	elif event is InputEventMagnifyGesture:  # pinch on a trackpad
 		zoom /= event.factor
-	else:
-		return
 	_clamp()
+
+
+func is_dragging() -> bool:
+	return _dragging
 
 
 func _clamp() -> void:
@@ -145,3 +148,10 @@ func floor_forward() -> Vector3i:
 	if absf(f.x) >= absf(f.z):
 		return Vector3i(int(signf(f.x)), 0, 0)
 	return Vector3i(0, 0, int(signf(f.z)))
+
+
+## Horizontal direction the camera faces, as a unit vector.
+func flat_forward() -> Vector3:
+	var f := -global_transform.basis.z + global_transform.basis.y
+	f.y = 0.0
+	return f.normalized() if f.length() > 0.001 else Vector3.FORWARD

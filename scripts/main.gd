@@ -1,19 +1,30 @@
 extends Node3D
 ## Prototype entry point. Builds the whole scene in code (cube, camera, HUD),
-## reads the keyboard, and asks GameState whether moves are allowed.
+## reads the keyboard and mouse, and asks GameState whether moves are allowed.
 
 const GameState := preload("res://scripts/game_state.gd")
 const Player := preload("res://scripts/player.gd")
 const Pieces := preload("res://scripts/pieces.gd")
 const Piece := preload("res://scripts/piece.gd")
 const OrbitCamera := preload("res://scripts/orbit_camera.gd")
+const CellMesh := preload("res://scripts/cell_mesh.gd")
 
 ## Size of the play cube in cells.
-@export var grid_size := Vector3i(15, 15, 15)
+@export var grid_size := Vector3i(24, 24, 24)
 ## Which piece sizes (number of cells) can be dealt. [4] deals only 4-cell pieces.
 @export var piece_sizes: Array[int] = [3, 4, 5]
 
-const HELP_TEXT := """CONTROLS              H hides this
+const HELP_TEXT := """MOUSE                 H hides this
+Drag          orbit camera,  wheel  zoom
+Click piece   pick it up (rings appear)
+ then drag    slide it sideways
+ Shift+drag   move it up / down
+ click ring   rotate (Shift: other way)
+ click again  let go, back to camera
+Double-click  place the piece
+Right-drag    always orbits
+
+KEYBOARD
 Move piece    W A S D  (follows camera)
 Up / down     E / Q
 Rotate        X  Y  Z  (Shift: other way)
@@ -25,8 +36,16 @@ Restart       R
 Orbit         drag mouse, arrow keys
 Zoom          mouse wheel, + / -
 View          1 Overview  2 Start  3 Follow
-              4 Down the tunnel
+              4 Through the start, 45°
               V or Tab cycles views"""
+
+## Radius of the rotation rings around the selected piece.
+const RING_RADIUS := 2.4
+const RING_PICK_WIDTH := 0.45
+const RING_AXES := [Vector3.AXIS_X, Vector3.AXIS_Y, Vector3.AXIS_Z]
+const RING_COLORS := [Color(1, 0.35, 0.35), Color(0.4, 1, 0.4), Color(0.4, 0.6, 1)]
+
+enum Drag { NONE, PIECE, CAMERA }
 
 var state: GameState
 var player: Player
@@ -38,11 +57,8 @@ var rng := RandomNumberGenerator.new()
 var camera: OrbitCamera
 var _tunnel_root: Node3D
 var _ghost_root: Node3D
-var _cell_mesh := BoxMesh.new()
-var _ghost_mesh := BoxMesh.new()
 var _shadow_mesh := BoxMesh.new()
-var _layer_materials := {}
-var _start_material: StandardMaterial3D
+var _tunnel_material: StandardMaterial3D
 var _ghost_ok: StandardMaterial3D
 var _ghost_bad: StandardMaterial3D
 var _shadow_material: StandardMaterial3D
@@ -52,11 +68,21 @@ var _banner: Control
 var _banner_label: Label
 var _face_labels: Array[Label3D] = []
 
+# Mouse handling
+var selected := false
+var _drag := Drag.NONE
+var _drag_plane: Plane
+var _drag_vertical := false
+var _drag_start_hit := Vector3.ZERO
+var _drag_start_origin := Vector3i.ZERO
+var _press_position := Vector2.ZERO
+var _rings: Array[MeshInstance3D] = []
+var _ring_materials: Array[StandardMaterial3D] = []
+var _hover_ring := -1
+
 
 func _ready() -> void:
 	rng.randomize()
-	_cell_mesh.size = Vector3.ONE * 0.94
-	_ghost_mesh.size = Vector3.ONE * 0.98
 	_build_environment()
 	_build_frame()
 	_build_axis_gizmo()
@@ -64,6 +90,7 @@ func _ready() -> void:
 	add_child(_tunnel_root)
 	_ghost_root = Node3D.new()
 	add_child(_ghost_root)
+	_build_rings()
 	camera = OrbitCamera.new()
 	add_child(camera)
 	_build_hud()
@@ -93,6 +120,7 @@ func _deal_piece() -> void:
 	next_name = Pieces.random_name(piece_sizes, rng)
 	piece.origin = _spawn_origin()
 	piece.clamp_into(grid_size)
+	selected = false
 	_refresh()
 
 
@@ -167,6 +195,9 @@ func rotate_piece(axis: int, direction: int) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouse or event is InputEventGesture:
+		_handle_mouse(event)
+		return
 	if not (event is InputEventKey and event.pressed):
 		return
 	var key := event as InputEventKey
@@ -219,6 +250,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_H, KEY_F1:
 			if not key.echo:
 				_help_panel.visible = not _help_panel.visible
+		KEY_ESCAPE:
+			selected = false
+			_refresh()
 		_:
 			return
 	get_viewport().set_input_as_handled()
@@ -230,19 +264,182 @@ func _set_view(mode: int) -> void:
 	_update_hud()
 
 
-## In the tunnel view the tunnel turns see-through, so you can look past it
-## down to the goal face and see the piece you are placing.
+## In the 45° view the tunnel is partly see-through, so you can look past it
+## towards the goal face and still see the piece you are placing.
 func _apply_view_style() -> void:
 	var tunnel_view := camera.mode == OrbitCamera.Mode.TUNNEL
-	var alpha := 0.3 if tunnel_view else 1.0
+	var alpha := 0.6 if tunnel_view else 1.0
 	for l in _face_labels:
 		l.visible = not tunnel_view  # they would sit right on the line of sight
-	var mats: Array = _layer_materials.values()
-	mats.append(_start_material)
-	for mat in mats:
-		mat.albedo_color.a = alpha
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if alpha < 1.0 \
-			else BaseMaterial3D.TRANSPARENCY_DISABLED
+	_tunnel_material.albedo_color.a = alpha
+	_tunnel_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if alpha < 1.0 \
+		else BaseMaterial3D.TRANSPARENCY_DISABLED
+
+
+# --- Mouse ------------------------------------------------------------------
+
+func _handle_mouse(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_on_left_press(event)
+		else:
+			_on_left_release(event)
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventMouseMotion:
+		if _drag == Drag.PIECE:
+			_drag_piece_to(event.position)
+		elif _drag == Drag.NONE:
+			_update_hover(event.position)
+	if _drag != Drag.PIECE:
+		camera.handle_input(event)
+
+
+## The mouse controls the camera until you click the piece. Then it controls
+## the piece (drag to move, click a ring to rotate) until you click again.
+func _on_left_press(event: InputEventMouseButton) -> void:
+	_press_position = event.position
+	_drag = Drag.NONE
+	if player.has_won:
+		_drag = Drag.CAMERA
+		camera.handle_input(event)
+		return
+	var hit = _piece_hit(event.position)
+	if event.double_click and hit != null:
+		try_place()
+		return
+	if not selected:
+		_drag = Drag.CAMERA
+		camera.handle_input(event)
+		return
+	var ring := _ring_at(event.position)
+	if ring >= 0:
+		rotate_piece(RING_AXES[ring], -1 if event.shift_pressed else 1)
+		return
+	# Selected: a drag anywhere moves the piece, measured in a plane through it.
+	_drag = Drag.PIECE
+	_drag_vertical = event.shift_pressed
+	_drag_start_origin = piece.origin
+	var through: Vector3 = hit if hit != null else piece.centre()
+	if _drag_vertical:
+		_drag_plane = Plane(camera.flat_forward(), through)
+	else:
+		_drag_plane = Plane(Vector3.UP, through)
+	var start = _drag_plane.intersects_ray(camera.project_ray_origin(event.position),
+		camera.project_ray_normal(event.position))
+	_drag_start_hit = start if start != null else through
+
+
+func _on_left_release(event: InputEventMouseButton) -> void:
+	var clicked := event.position.distance_to(_press_position) < 4.0
+	if _drag == Drag.CAMERA:
+		camera.handle_input(event)
+		# A click (not a drag) on the piece picks it up.
+		if clicked and not player.has_won and _piece_hit(event.position) != null:
+			selected = true
+	elif _drag == Drag.PIECE and clicked:
+		selected = false  # a second click lets go, the mouse controls the camera again
+	_drag = Drag.NONE
+	_refresh()
+
+
+func _drag_piece_to(screen_pos: Vector2) -> void:
+	var from := camera.project_ray_origin(screen_pos)
+	var dir := camera.project_ray_normal(screen_pos)
+	var hit = _drag_plane.intersects_ray(from, dir)
+	if hit == null:
+		return
+	var delta: Vector3 = hit - _drag_start_hit
+	var step := Vector3i(roundi(delta.x), roundi(delta.y), roundi(delta.z))
+	if _drag_vertical:
+		step = Vector3i(0, step.y, 0)
+	else:
+		step.y = 0
+	var old := piece.origin
+	piece.origin = _drag_start_origin + step
+	piece.clamp_into(grid_size)
+	if piece.origin != old:
+		_refresh(false)
+
+
+## Point where the mouse ray first hits the piece, or null.
+func _piece_hit(screen_pos: Vector2):
+	var from := camera.project_ray_origin(screen_pos)
+	var dir := camera.project_ray_normal(screen_pos)
+	var best = null
+	var best_dist := INF
+	for cell in piece.cells():
+		var p = AABB(Vector3(cell), Vector3.ONE).intersects_ray(from, dir)
+		if p != null and from.distance_to(p) < best_dist:
+			best = p
+			best_dist = from.distance_to(p)
+	return best
+
+
+## Index of the rotation ring under the mouse, or -1.
+func _ring_at(screen_pos: Vector2) -> int:
+	if not selected or player.has_won:
+		return -1
+	var from := camera.project_ray_origin(screen_pos)
+	var dir := camera.project_ray_normal(screen_pos)
+	var centre := piece.centre()
+	var best := -1
+	var best_dist := INF
+	for i in RING_AXES.size():
+		var normal := Vector3.ZERO
+		normal[RING_AXES[i]] = 1.0
+		var p = Plane(normal, centre).intersects_ray(from, dir)
+		if p == null:
+			continue
+		var r: float = (p - centre).length()
+		if absf(r - RING_RADIUS) < RING_PICK_WIDTH and from.distance_to(p) < best_dist:
+			best = i
+			best_dist = from.distance_to(p)
+	return best
+
+
+func _update_hover(screen_pos: Vector2) -> void:
+	var ring := _ring_at(screen_pos)
+	if ring != _hover_ring:
+		_hover_ring = ring
+		_style_rings()
+	if ring >= 0:
+		Input.set_default_cursor_shape(Input.CURSOR_POINTING_HAND)
+	elif not player.has_won and _piece_hit(screen_pos) != null:
+		Input.set_default_cursor_shape(Input.CURSOR_MOVE)
+	else:
+		Input.set_default_cursor_shape(Input.CURSOR_ARROW)
+
+
+func _build_rings() -> void:
+	for i in RING_AXES.size():
+		var torus := TorusMesh.new()
+		torus.inner_radius = RING_RADIUS - 0.07
+		torus.outer_radius = RING_RADIUS + 0.07
+		torus.rings = 48
+		var mat := _material(RING_COLORS[i], true)
+		mat.no_depth_test = true
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.render_priority = 1
+		var mi := MeshInstance3D.new()
+		mi.mesh = torus
+		mi.material_override = mat
+		# A torus lies flat (around Y); turn it to circle the X or Z axis.
+		if RING_AXES[i] == Vector3.AXIS_X:
+			mi.rotation_degrees = Vector3(0, 0, 90)
+		elif RING_AXES[i] == Vector3.AXIS_Z:
+			mi.rotation_degrees = Vector3(90, 0, 0)
+		add_child(mi)
+		_rings.append(mi)
+		_ring_materials.append(mat)
+	_style_rings()
+
+
+func _style_rings() -> void:
+	for i in _rings.size():
+		var hot := i == _hover_ring
+		_ring_materials[i].albedo_color = RING_COLORS[i].lightened(0.3) if hot else Color(RING_COLORS[i], 0.6)
+		_rings[i].scale = Vector3.ONE * (1.06 if hot else 1.0)
 
 
 # --- Drawing ----------------------------------------------------------------
@@ -290,15 +487,8 @@ func _build_environment() -> void:
 
 
 func _build_player_materials() -> void:
-	_layer_materials.clear()
-	_start_material = _material(Color(0.3, 1.0, 0.45))
-	_start_material.emission_enabled = true
-	_start_material.emission = Color(0.1, 0.45, 0.15)
-	var depth := grid_size[player.goal_axis] - 1
-	for i in depth + 1:
-		var t: float = float(i) / maxi(1, depth)
-		var c := player.color.lightened(0.35).lerp(player.color.darkened(0.35), t)
-		_layer_materials[i] = _material(c)
+	_tunnel_material = _material(Color.WHITE)
+	_tunnel_material.vertex_color_use_as_albedo = true
 	var s := Vector3.ONE * 0.9
 	s[player.goal_axis] = 0.04
 	_shadow_mesh.size = s
@@ -325,7 +515,7 @@ func _build_frame() -> void:
 				q[a] = s[a]
 				_line(lines, p, q, edge)
 	# Start face is the top (y = max), goal face is the bottom (y = 0).
-	_face_grid(lines, Vector3.AXIS_Y, s.y, Color(0.4, 1.0, 0.5, 0.45))
+	_face_grid(lines, Vector3.AXIS_Y, s.y, Color(0.4, 1.0, 0.5, 0.22))
 	_face_grid(lines, Vector3.AXIS_Y, 0.0, Color(1.0, 0.8, 0.3, 0.6))
 	lines.surface_end()
 	var mi := MeshInstance3D.new()
@@ -425,33 +615,37 @@ func _build_axis_gizmo() -> void:
 		l.font_size = 36
 
 
+## The tunnel is drawn as one solid shape, coloured lighter near the start
+## and darker towards the goal.
 func _rebuild_tunnel() -> void:
 	for child in _tunnel_root.get_children():
 		child.queue_free()
-	for cell in state.grid.cells_of(player.id):
-		var mi := MeshInstance3D.new()
-		mi.mesh = _cell_mesh
-		mi.position = _cell_centre(cell)
+	var depth := maxi(1, grid_size[player.goal_axis] - 1)
+	var near := player.color.lightened(0.35)
+	var far := player.color.darkened(0.35)
+	var mesh := CellMesh.build(state.grid.cells_of(player.id), func(cell: Vector3i) -> Color:
 		if cell == player.start_cell:
-			mi.material_override = _start_material
-		else:
-			mi.material_override = _layer_materials.get(player.progress_of(cell), _start_material)
-		_tunnel_root.add_child(mi)
+			return Color(0.3, 1.0, 0.45)
+		return near.lerp(far, float(player.progress_of(cell)) / depth))
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = _tunnel_material
+	_tunnel_root.add_child(mi)
 
 
-## Redraws the ghost piece and its shadow on the goal face, and the HUD.
-func _refresh() -> void:
+## Redraws the ghost piece, its shadow on the goal face, the rings and the HUD.
+## follow: whether the follow camera should chase the piece (not while dragging).
+func _refresh(follow := true) -> void:
 	for child in _ghost_root.get_children():
 		child.queue_free()
 	var reason := state.check_placement(player, piece.cells())
-	if not player.has_won:
-		var mat := _ghost_ok if reason == "" else _ghost_bad
+	var show_piece := not player.has_won
+	if show_piece:
+		var ghost := MeshInstance3D.new()
+		ghost.mesh = CellMesh.build(piece.cells(), func(_c: Vector3i) -> Color: return Color.WHITE)
+		ghost.material_override = _ghost_ok if reason == "" else _ghost_bad
+		_ghost_root.add_child(ghost)
 		for cell in piece.cells():
-			var mi := MeshInstance3D.new()
-			mi.mesh = _ghost_mesh
-			mi.material_override = mat
-			mi.position = _cell_centre(cell)
-			_ghost_root.add_child(mi)
 			var shadow := MeshInstance3D.new()
 			shadow.mesh = _shadow_mesh
 			shadow.material_override = _shadow_material
@@ -459,7 +653,11 @@ func _refresh() -> void:
 			p[player.goal_axis] = float(grid_size[player.goal_axis]) + 0.03 if player.goal_at_max else -0.03
 			shadow.position = p
 			_ghost_root.add_child(shadow)
-		camera.follow_point = piece.centre()
+		if follow and _drag != Drag.PIECE:
+			camera.follow_point = piece.centre()
+	for ring in _rings:
+		ring.visible = show_piece and selected
+		ring.position = piece.centre()
 	_update_hud(reason)
 
 
@@ -517,6 +715,23 @@ func _build_hud() -> void:
 	_banner.add_child(_banner_label)
 	_banner.visible = false
 
+	# Buttons along the bottom, so the game can be played with the mouse only.
+	var bar := HBoxContainer.new()
+	bar.add_theme_constant_override("separation", 10)
+	layer.add_child(bar)
+	for spec in [["Place", try_place], ["Skip", skip_piece], ["Undo", undo],
+			["Next view", func(): _set_view((camera.mode + 1) % OrbitCamera.MODE_NAMES.size())],
+			["Restart", new_game]]:
+		var b := Button.new()
+		b.text = spec[0]
+		b.focus_mode = Control.FOCUS_NONE  # keep Space for placing, not for the button
+		b.custom_minimum_size = Vector2(110, 40)
+		b.pressed.connect(spec[1])
+		bar.add_child(b)
+	bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 20)
+	bar.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	bar.grow_vertical = Control.GROW_DIRECTION_BEGIN
+
 
 func _show_win() -> void:
 	_banner_label.text = "Tunnel complete!\n%d pieces, %d skipped\n\nR to play again, Backspace to undo" \
@@ -542,8 +757,13 @@ func _update_hud(reason := "") -> void:
 	if player.has_won:
 		t += "[color=#ffd75a]Goal reached![/color]\n"
 	elif reason == "":
-		t += "[color=#6dff7a]Fits. Space to place.[/color]\n"
+		t += "[color=#6dff7a]Fits. Space or double-click to place.[/color]\n"
 	else:
 		t += "[color=#ff6b6b]%s[/color]\n" % reason
+	if not player.has_won:
+		if selected:
+			t += "[color=#9fd0ff]Mouse moves the piece. Click to let go.[/color]\n"
+		else:
+			t += "Click the piece to move it with the mouse.\n"
 	t += "View  %s" % camera.mode_name()
 	_status.text = t
