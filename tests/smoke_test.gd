@@ -28,6 +28,7 @@ func key(code: Key, shift := false) -> void:
 
 func _initialize() -> void:
 	main = load("res://scenes/main.tscn").instantiate()
+	main.grid_size = Vector3i(9, 9, 9)  # the positions below assume a 9-cell cube
 	root.add_child(main)
 
 
@@ -37,10 +38,14 @@ func _process(_delta: float) -> bool:
 		return false
 	check(main.piece != null, "a piece is dealt")
 	check(main.next_name in Pieces.SHAPES, "a next piece is chosen")
-	for k in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_E, KEY_Q, KEY_X, KEY_Y, KEY_Z, KEY_1, KEY_2, KEY_3, KEY_V, KEY_H, KEY_H, KEY_N]:
+	for k in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_E, KEY_Q, KEY_X, KEY_Y, KEY_Z, KEY_1, KEY_2, KEY_3, KEY_4, KEY_V, KEY_V, KEY_H, KEY_H, KEY_N]:
 		key(k)
 	key(KEY_X, true)
 	check(main.skips == 1, "N skips a piece")
+	key(KEY_4)
+	check(main.camera.mode == 3 and main._start_material.albedo_color.a < 1.0, "4 shows the see-through tunnel view")
+	key(KEY_2)
+	check(main._start_material.albedo_color.a == 1.0, "other views make the tunnel solid again")
 
 	# Put a known piece straight under the start and place it with Space.
 	main.piece = Piece.new("Bar", Pieces.SHAPES["Bar"])
