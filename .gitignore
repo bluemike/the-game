@@ -1,0 +1,4 @@
+# Godot cache and editor data
+.godot/
+*.tmp
+.DS_Store
