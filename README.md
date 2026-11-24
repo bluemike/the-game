@@ -1,12 +1,17 @@
 # THE-GAME
 
 A 3D tunnel-building puzzle. The play area is a cube made of small cells.
-You start in the centre of the top face and must dig a tunnel to the bottom
+You start in the centre of the top face of a 15x15x15 cube and must dig a tunnel to the bottom
 face using flat pieces (up to 3x3 cells). Each new piece must touch your
 tunnel somewhere. Later, several players will dig crossing tunnels and block
 each other.
 
 ![Prototype screenshot](docs/screenshot.png)
+
+The "down the tunnel" view (key **4**) looks from above the start straight
+at the goal face:
+
+![Down the tunnel view](docs/tunnel-view.png)
 
 ## Run the prototype
 
@@ -28,6 +33,10 @@ You only need Godot. It's free, about 100 MB, and needs no installer.
 
 To stop the game, close its window or press **F8** in the editor.
 
+The game opens maximized. Newer Godot versions (4.4 and later) may run it
+inside the editor's **Game** tab instead. For a separate window, open the
+Game tab's **⋮** menu and turn off embedding.
+
 ## Controls
 
 | What | Keys |
@@ -41,7 +50,7 @@ To stop the game, close its window or press **F8** in the editor.
 | Restart | **R** |
 | Orbit the camera | Drag with the mouse (any button), or the **arrow keys**. Two-finger scroll on a trackpad also works. |
 | Zoom | Mouse wheel, **+** / **-**, or pinch on a trackpad |
-| View mode | **1** Overview (whole cube), **2** Start (default), **3** Follow piece. **V** or **Tab** cycles. |
+| View mode | **1** Overview (whole cube), **2** Start (default), **3** Follow piece, **4** Down the tunnel (looks from above the start straight down to the goal face; the tunnel turns see-through). **V** or **Tab** cycles. |
 | Show / hide help | **H** |
 
 The keys are read by their letter, so on a Swiss/German keyboard **Y** and
@@ -61,7 +70,7 @@ The keys are read by their letter, so on a Swiss/German keyboard **Y** and
 Open `scenes/main.tscn` in Godot and click the **Main** node. In the
 Inspector on the right you can change:
 
-- **Grid Size**: the cube size in cells (default 9 x 9 x 9).
+- **Grid Size**: the cube size in cells (default 15 x 15 x 15).
 - **Piece Sizes**: which piece sizes are dealt, by number of cells
   (default 3, 4 and 5). Set it to just `4` and every piece has 4 cells.
 

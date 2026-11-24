@@ -9,7 +9,7 @@ const Piece := preload("res://scripts/piece.gd")
 const OrbitCamera := preload("res://scripts/orbit_camera.gd")
 
 ## Size of the play cube in cells.
-@export var grid_size := Vector3i(9, 9, 9)
+@export var grid_size := Vector3i(15, 15, 15)
 ## Which piece sizes (number of cells) can be dealt. [4] deals only 4-cell pieces.
 @export var piece_sizes: Array[int] = [3, 4, 5]
 
@@ -25,6 +25,7 @@ Restart       R
 Orbit         drag mouse, arrow keys
 Zoom          mouse wheel, + / -
 View          1 Overview  2 Start  3 Follow
+              4 Down the tunnel
               V or Tab cycles views"""
 
 var state: GameState
@@ -49,6 +50,7 @@ var _status: RichTextLabel
 var _help_panel: Control
 var _banner: Control
 var _banner_label: Label
+var _face_labels: Array[Label3D] = []
 
 
 func _ready() -> void:
@@ -75,7 +77,11 @@ func new_game() -> void:
 	_build_player_materials()
 	skips = 0
 	next_name = Pieces.random_name(piece_sizes, rng)
-	camera.setup(Vector3(grid_size) / 2.0, float(grid_size[grid_size.max_axis_index()]), _cell_centre(player.start_cell))
+	var goal_point := _cell_centre(player.start_cell)
+	goal_point[player.goal_axis] = float(grid_size[player.goal_axis]) if player.goal_at_max else 0.0
+	camera.setup(Vector3(grid_size) / 2.0, float(grid_size[grid_size.max_axis_index()]),
+		_cell_centre(player.start_cell), goal_point)
+	_apply_view_style()
 	_deal_piece()
 	_rebuild_tunnel()
 
@@ -205,10 +211,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_view(OrbitCamera.Mode.START)
 		KEY_3:
 			_set_view(OrbitCamera.Mode.FOLLOW)
+		KEY_4:
+			_set_view(OrbitCamera.Mode.TUNNEL)
 		KEY_V, KEY_TAB:
 			if not key.echo:
-				camera.cycle_mode()
-				_update_hud()
+				_set_view((camera.mode + 1) % OrbitCamera.MODE_NAMES.size())
 		KEY_H, KEY_F1:
 			if not key.echo:
 				_help_panel.visible = not _help_panel.visible
@@ -219,7 +226,23 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _set_view(mode: int) -> void:
 	camera.set_mode(mode)
+	_apply_view_style()
 	_update_hud()
+
+
+## In the tunnel view the tunnel turns see-through, so you can look past it
+## down to the goal face and see the piece you are placing.
+func _apply_view_style() -> void:
+	var tunnel_view := camera.mode == OrbitCamera.Mode.TUNNEL
+	var alpha := 0.3 if tunnel_view else 1.0
+	for l in _face_labels:
+		l.visible = not tunnel_view  # they would sit right on the line of sight
+	var mats: Array = _layer_materials.values()
+	mats.append(_start_material)
+	for mat in mats:
+		mat.albedo_color.a = alpha
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA if alpha < 1.0 \
+			else BaseMaterial3D.TRANSPARENCY_DISABLED
 
 
 # --- Drawing ----------------------------------------------------------------
@@ -312,8 +335,8 @@ func _build_frame() -> void:
 	_face_quad(Vector3.AXIS_Y, s.y + 0.01, Color(0.3, 1.0, 0.45, 0.07))
 	_face_quad(Vector3.AXIS_Y, -0.01, Color(1.0, 0.75, 0.2, 0.22))
 
-	_label("START", Vector3(s.x / 2.0, s.y + 0.9, s.z / 2.0), Color(0.5, 1.0, 0.6))
-	_label("GOAL", Vector3(s.x / 2.0, -0.9, s.z / 2.0), Color(1.0, 0.8, 0.3))
+	_face_labels.append(_label("START", Vector3(s.x / 2.0, s.y + 0.9, s.z / 2.0), Color(0.5, 1.0, 0.6)))
+	_face_labels.append(_label("GOAL", Vector3(s.x / 2.0, -0.9, s.z / 2.0), Color(1.0, 0.8, 0.3)))
 
 
 func _line(im: ImmediateMesh, a: Vector3, b: Vector3, color: Color) -> void:
